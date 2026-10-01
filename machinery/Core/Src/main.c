@@ -45,9 +45,7 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-static Motor_HandleTypeDef motorA, motorB;
-static Encoder_State encoderA, encoderB;
-static uint32_t encoderTick;
+/* Motor and encoder state are maintained by motor.c. */
 
 /* USER CODE END PV */
 
@@ -95,16 +93,16 @@ int main(void)
   MX_TIM3_Init();
   MX_TIM4_Init();
   /* USER CODE BEGIN 2 */
-  if (Motor_Init(&motorA, &htim2, TIM_CHANNEL_1, TIM_CHANNEL_2) != HAL_OK ||
-      Motor_Init(&motorB, &htim2, TIM_CHANNEL_4, TIM_CHANNEL_3) != HAL_OK ||
-      HAL_TIM_Encoder_Start(&htim3, TIM_CHANNEL_ALL) != HAL_OK ||
-      HAL_TIM_Encoder_Start(&htim4, TIM_CHANNEL_ALL) != HAL_OK)
+  if (Motor_SystemInit() != HAL_OK)
   {
     Error_Handler();
   }
-  Encoder_Reset(&encoderA, (uint16_t)__HAL_TIM_GET_COUNTER(&htim3));
-  Encoder_Reset(&encoderB, (uint16_t)__HAL_TIM_GET_COUNTER(&htim4));
-  encoderTick = HAL_GetTick();
+  /* Configure both motors with Motor_PIDConfigure before nonzero RPM.
+   * After calibration, use CSGO(30, 30) for +30 RPM on CN1/CN2. */
+  if (CSGO(0, 0) != HAL_OK)
+  {
+    Error_Handler();
+  }
 
   /* USER CODE END 2 */
 
@@ -115,14 +113,7 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    uint32_t now = HAL_GetTick();
-    uint32_t elapsed = now - encoderTick;
-    if (elapsed >= 10U)
-    {
-      encoderTick = now;
-      (void)Encoder_Sample(&encoderA, (uint16_t)__HAL_TIM_GET_COUNTER(&htim3), elapsed);
-      (void)Encoder_Sample(&encoderB, (uint16_t)__HAL_TIM_GET_COUNTER(&htim4), elapsed);
-    }
+    (void)Motor_Update();
   }
   /* USER CODE END 3 */
 }

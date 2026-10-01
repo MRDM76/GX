@@ -6,7 +6,7 @@
 typedef enum { HAL_OK, HAL_ERROR, HAL_BUSY, HAL_TIMEOUT } HAL_StatusTypeDef;
 typedef enum { HAL_TIM_CHANNEL_STATE_RESET, HAL_TIM_CHANNEL_STATE_READY,
                HAL_TIM_CHANNEL_STATE_BUSY } HAL_TIM_ChannelStateTypeDef;
-typedef struct { uint32_t CR1, SMCR, ARR, CCR[4]; } TIM_TypeDef;
+typedef struct { uint32_t CR1, SMCR, ARR, CCR[4], CNT; } TIM_TypeDef;
 typedef struct { TIM_TypeDef *Instance; uint32_t state[4]; } TIM_HandleTypeDef;
 typedef struct { uint32_t OCMode, Pulse, OCPolarity, OCFastMode; } TIM_OC_InitTypeDef;
 extern TIM_TypeDef test_tim2, test_tim3, test_tim4;
@@ -18,6 +18,11 @@ extern uint32_t test_mask;
 #define TIM_CHANNEL_2 4U
 #define TIM_CHANNEL_3 8U
 #define TIM_CHANNEL_4 12U
+#define TIM_CHANNEL_ALL 60U
+#define __HAL_TIM_GET_COUNTER(t) ((t)->Instance->CNT)
+uint32_t HAL_GetTick(void);
+HAL_StatusTypeDef HAL_TIM_Encoder_Start(TIM_HandleTypeDef *, uint32_t);
+HAL_StatusTypeDef HAL_TIM_Encoder_Stop(TIM_HandleTypeDef *, uint32_t);
 #define TIM_CR1_UDIS 2U
 #define TIM_CR1_DIR 16U
 #define TIM_CR1_CMS 96U

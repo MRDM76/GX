@@ -1,4 +1,101 @@
 #include "motor.h"
+#include "tim.h"
+#include <float.h>
+
+Motor_HandleTypeDef motorA = {0};
+Motor_HandleTypeDef motorB = {0};
+Encoder_State encoderA;
+Encoder_State encoderB;
+static uint32_t encoderTick;
+static uint8_t systemReady;
+
+typedef struct {
+    PID_Controller pid;
+    float target_rpm;
+    uint32_t cpr;
+    int8_t sign;
+    uint8_t configured;
+    uint8_t enabled;
+} Motor_SpeedControl;
+
+static Motor_SpeedControl speedControl[2];
+static HAL_StatusTypeDef apply_duty(Motor_HandleTypeDef *motor, int32_t duty);
+static HAL_StatusTypeDef speed_update(float dt);
+
+static Motor_SpeedControl *speed_control(const Motor_HandleTypeDef *motor)
+{
+    if (motor == &motorA) return &speedControl[0];
+    if (motor == &motorB) return &speedControl[1];
+    return NULL;
+}
+
+static void disable_speed_control(Motor_HandleTypeDef *motor)
+{
+    Motor_SpeedControl *control = speed_control(motor);
+    if (control != NULL)
+    {
+        control->enabled = 0U;
+        control->target_rpm = 0.0f;
+        PID_Reset(&control->pid);
+    }
+}
+
+HAL_StatusTypeDef Motor_SystemInit(void)
+{
+    HAL_StatusTypeDef status;
+    if (motorA.initialized || motorB.initialized) return HAL_BUSY;
+    disable_speed_control(&motorA);
+    disable_speed_control(&motorB);
+    speedControl[0].configured = 0U;
+    speedControl[1].configured = 0U;
+    systemReady = 0U;
+    status = Motor_Init(&motorA, &htim2, TIM_CHANNEL_1, TIM_CHANNEL_2);
+    if (status != HAL_OK) return status;
+    status = Motor_Init(&motorB, &htim2, TIM_CHANNEL_4, TIM_CHANNEL_3);
+    if (status != HAL_OK) goto fail_pwm;
+    status = HAL_TIM_Encoder_Start(&htim3, TIM_CHANNEL_ALL);
+    if (status != HAL_OK) goto fail_pwm;
+    status = HAL_TIM_Encoder_Start(&htim4, TIM_CHANNEL_ALL);
+    if (status != HAL_OK)
+    {
+        (void)HAL_TIM_Encoder_Stop(&htim3, TIM_CHANNEL_ALL);
+        goto fail_pwm;
+    }
+    Encoder_Reset(&encoderA, (uint16_t)__HAL_TIM_GET_COUNTER(&htim3));
+    Encoder_Reset(&encoderB, (uint16_t)__HAL_TIM_GET_COUNTER(&htim4));
+    encoderTick = HAL_GetTick();
+    systemReady = 1U;
+    return HAL_OK;
+fail_pwm:
+    if (motorB.initialized) (void)Motor_DeInit(&motorB);
+    (void)Motor_DeInit(&motorA);
+    return status;
+}
+
+HAL_StatusTypeDef Motor_Update(void)
+{
+    uint32_t now, elapsed;
+    int a, b;
+    if (!systemReady || !motorA.initialized || !motorB.initialized)
+    {
+        if (speedControl[0].enabled) (void)Motor_Stop(&motorA);
+        if (speedControl[1].enabled) (void)Motor_Stop(&motorB);
+        return HAL_ERROR;
+    }
+    now = HAL_GetTick();
+    elapsed = now - encoderTick;
+    if (elapsed < 10U) return HAL_BUSY;
+    encoderTick = now;
+    a = Encoder_Sample(&encoderA, (uint16_t)__HAL_TIM_GET_COUNTER(&htim3), elapsed);
+    b = Encoder_Sample(&encoderB, (uint16_t)__HAL_TIM_GET_COUNTER(&htim4), elapsed);
+    if (!a || !b)
+    {
+        if (speedControl[0].enabled) (void)Motor_Stop(&motorA);
+        if (speedControl[1].enabled) (void)Motor_Stop(&motorB);
+        return HAL_TIMEOUT;
+    }
+    return speed_update((float)elapsed * 0.001f);
+}
 
 static int channel_valid(uint32_t channel)
 {
@@ -84,7 +181,7 @@ HAL_StatusTypeDef Motor_Init(Motor_HandleTypeDef *motor,
     return HAL_OK;
 }
 
-HAL_StatusTypeDef Motor_SetSpeed(Motor_HandleTypeDef *motor, int32_t duty)
+static HAL_StatusTypeDef apply_duty(Motor_HandleTypeDef *motor, int32_t duty)
 {
     uint32_t ticks;
     uint32_t magnitude;
@@ -100,16 +197,38 @@ HAL_StatusTypeDef Motor_SetSpeed(Motor_HandleTypeDef *motor, int32_t duty)
     return HAL_OK;
 }
 
+HAL_StatusTypeDef Motor_SetSpeed(Motor_HandleTypeDef *motor, int32_t duty)
+{
+    disable_speed_control(motor);
+    return apply_duty(motor, duty);
+}
+
 HAL_StatusTypeDef Motor_Stop(Motor_HandleTypeDef *motor)
 {
+    disable_speed_control(motor);
     if (!motor_valid(motor)) return HAL_ERROR;
     write_pair(motor, 0U, 0U);
     return HAL_OK;
 }
 
+HAL_StatusTypeDef Motor_SetDutyPercent(int32_t cn1_percent, int32_t cn2_percent)
+{
+    HAL_StatusTypeDef status;
+    if (!motor_valid(&motorA) || !motor_valid(&motorB)) return HAL_ERROR;
+    /* Clamp before multiplying, including for INT32_MIN/INT32_MAX. */
+    if (cn1_percent > 100) cn1_percent = 100;
+    if (cn1_percent < -100) cn1_percent = -100;
+    if (cn2_percent > 100) cn2_percent = 100;
+    if (cn2_percent < -100) cn2_percent = -100;
+    status = Motor_SetSpeed(&motorA, cn1_percent * 10);
+    if (status != HAL_OK) return status;
+    return Motor_SetSpeed(&motorB, cn2_percent * 10);
+}
+
 HAL_StatusTypeDef Motor_Brake(Motor_HandleTypeDef *motor)
 {
     uint32_t arr;
+    disable_speed_control(motor);
     if (!motor_valid(motor)) return HAL_ERROR;
     arr = __HAL_TIM_GET_AUTORELOAD(motor->timer);
     if (arr < 1U || arr > 65534U) return HAL_ERROR;
@@ -121,6 +240,7 @@ HAL_StatusTypeDef Motor_DeInit(Motor_HandleTypeDef *motor)
 {
     HAL_StatusTypeDef first;
     HAL_StatusTypeDef second;
+    disable_speed_control(motor);
     if (!motor_valid(motor)) return HAL_ERROR;
     __HAL_TIM_DISABLE_OCxPRELOAD(motor->timer, motor->in1_channel);
     __HAL_TIM_DISABLE_OCxPRELOAD(motor->timer, motor->in2_channel);
@@ -131,6 +251,117 @@ HAL_StatusTypeDef Motor_DeInit(Motor_HandleTypeDef *motor)
     motor->initialized = 0U;
     motor->timer = NULL;
     return first != HAL_OK ? first : second;
+}
+
+HAL_StatusTypeDef Motor_PIDConfigure(Motor_HandleTypeDef *motor, uint32_t cpr,
+                                     int8_t sign, const PID_Config *config)
+{
+    PID_Controller candidate = {0};
+    Motor_SpeedControl *control = speed_control(motor);
+    Encoder_State *encoder;
+    if (!systemReady || !motor_valid(motor) || control == NULL || cpr == 0U ||
+        (sign != 1 && sign != -1) || config == NULL ||
+        config->output_min != 0.0f || config->output_max > 1000.0f ||
+        (config->kp == 0.0f && config->ki == 0.0f) || !PID_Init(&candidate, config))
+        return HAL_ERROR;
+    if (Motor_Stop(motor) != HAL_OK) return HAL_ERROR;
+    encoder = motor == &motorA ? &encoderA : &encoderB;
+    encoder->counts_per_turn = cpr;
+    encoder->sign = sign;
+    encoder->valid = 0U;
+    encoder->rpm = 0.0f;
+    control->pid = candidate;
+    control->cpr = cpr;
+    control->sign = sign;
+    control->configured = 1U;
+    return HAL_OK;
+}
+
+static int target_valid(Motor_HandleTypeDef *motor, float rpm)
+{
+    Motor_SpeedControl *control = speed_control(motor);
+    Encoder_State *encoder;
+    if (!systemReady || !motor_valid(motor) || control == NULL ||
+        rpm != rpm || rpm > FLT_MAX || rpm < -FLT_MAX) return 0;
+    if (rpm == 0.0f) return 1;
+    encoder = motor == &motorA ? &encoderA : &encoderB;
+    if (!control->configured || encoder->counts_per_turn != control->cpr ||
+        encoder->sign != control->sign) return 0;
+    if (control->enabled && ((rpm > 0.0f) != (control->target_rpm > 0.0f)))
+        return 0;
+    return 1;
+}
+
+HAL_StatusTypeDef CSGO(float cn1_rpm, float cn2_rpm)
+{
+    /* Validate BOTH requests before changing either target. Foreground only. */
+    if (!target_valid(&motorA, cn1_rpm) || !target_valid(&motorB, cn2_rpm))
+        return HAL_ERROR;
+    if (Motor_SetTargetRPM(&motorA, cn1_rpm) != HAL_OK ||
+        Motor_SetTargetRPM(&motorB, cn2_rpm) != HAL_OK)
+    {
+        (void)Motor_Stop(&motorA);
+        (void)Motor_Stop(&motorB);
+        return HAL_ERROR;
+    }
+    return HAL_OK;
+}
+
+HAL_StatusTypeDef Motor_SetTargetRPM(Motor_HandleTypeDef *motor, float rpm)
+{
+    Motor_SpeedControl *control = speed_control(motor);
+    if (!target_valid(motor, rpm)) return HAL_ERROR;
+    if (rpm == 0.0f) return Motor_Stop(motor);
+    if (!control->enabled)
+    {
+        if (Motor_Stop(motor) != HAL_OK) return HAL_ERROR;
+        /* The first control output is computed at the next encoder sample. */
+    }
+    control->target_rpm = rpm;
+    control->enabled = 1U;
+    return HAL_OK;
+}
+
+HAL_StatusTypeDef Motor_PIDDisable(Motor_HandleTypeDef *motor)
+{
+    if (speed_control(motor) == NULL) return HAL_ERROR;
+    return Motor_Stop(motor);
+}
+
+uint8_t Motor_PIDIsEnabled(const Motor_HandleTypeDef *motor)
+{
+    Motor_SpeedControl *control = speed_control(motor);
+    return control != NULL ? control->enabled : 0U;
+}
+
+static HAL_StatusTypeDef speed_update(float dt)
+{
+    Motor_HandleTypeDef *motors[2] = {&motorA, &motorB};
+    Encoder_State *encoders[2] = {&encoderA, &encoderB};
+    int32_t duties[2] = {0, 0};
+    unsigned int i;
+    for (i = 0U; i < 2U; ++i)
+    {
+        Motor_SpeedControl *control = &speedControl[i];
+        Encoder_State *encoder = encoders[i];
+        float direction, output;
+        if (!control->enabled) continue;
+        if (!encoder->valid || encoder->counts_per_turn != control->cpr ||
+            encoder->sign != control->sign || control->cpr == 0U) goto fault;
+        direction = control->target_rpm > 0.0f ? 1.0f : -1.0f;
+        if (!PID_Update(&control->pid, control->target_rpm * direction,
+                        encoder->rpm * direction, dt, &output)) goto fault;
+        duties[i] = (int32_t)(output + 0.5f);
+        if (direction < 0.0f) duties[i] = -duties[i];
+    }
+    for (i = 0U; i < 2U; ++i)
+        if (speedControl[i].enabled && apply_duty(motors[i], duties[i]) != HAL_OK)
+            goto fault;
+    return HAL_OK;
+fault:
+    for (i = 0U; i < 2U; ++i)
+        if (speedControl[i].enabled) (void)Motor_Stop(motors[i]);
+    return HAL_ERROR;
 }
 
 #include <limits.h>

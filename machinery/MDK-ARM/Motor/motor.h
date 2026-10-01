@@ -2,6 +2,7 @@
 #define MOTOR_H
 
 #include "stm32f1xx_hal.h"
+#include "pid.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -19,6 +20,43 @@ typedef struct
     uint32_t in2_channel;
     uint8_t initialized;
 } Motor_HandleTypeDef;
+
+/* Board motors: motorA = CN1, motorB = CN2. */
+extern Motor_HandleTypeDef motorA;
+extern Motor_HandleTypeDef motorB;
+
+/* Call once AFTER CubeMX MX_TIM2/3/4_Init. Starts at zero duty.
+ * Uses CubeMX handles; does not configure clocks, pins or timer modes. */
+HAL_StatusTypeDef Motor_SystemInit(void);
+/* Call repeatedly in the main loop; samples encoders every >=10ms.
+ * HAL_BUSY: not due; HAL_TIMEOUT: invalid sample; HAL_OK: new sample. */
+HAL_StatusTypeDef Motor_Update(void);
+
+/* RPM closed loop for motorA/motorB only. Configure after SystemInit.
+ * CPR is output-shaft counts/rev AFTER quadrature x4; sign is +1/-1.
+ * config output_min must be 0; output_max in (0,1000] permille.
+ * Configure stops the selected motor; valid CPR and actual tuned gains
+ * are required. No automatic enable or assumed motor specifications.
+ */
+HAL_StatusTypeDef Motor_PIDConfigure(Motor_HandleTypeDef *motor, uint32_t cpr,
+                                     int8_t sign, const PID_Config *config);
+/* Signed target RPM. 0 disables PID and coasts. A running target cannot
+ * change sign: command 0, wait for the load to slow, then reverse.
+ * Overspeed reduces PWM to zero; PID does not reverse torque to brake.
+ */
+HAL_StatusTypeDef Motor_SetTargetRPM(Motor_HandleTypeDef *motor, float rpm);
+HAL_StatusTypeDef Motor_PIDDisable(Motor_HandleTypeDef *motor);
+uint8_t Motor_PIDIsEnabled(const Motor_HandleTypeDef *motor);
+
+/* CN1/CN2 signed output-shaft RPM targets. Requires PIDConfigure for each
+ * nonzero target. Both requests validated before either target changes.
+ * Call Motor_Update continuously. Zero stops; stop before reversing. */
+HAL_StatusTypeDef CSGO(float cn1_rpm, float cn2_rpm);
+
+/* Signed integer PWM percentages, clamped to [-100, 100].
+ * Positive/negative select direction; zero coasts. Not RPM or PID.
+ * Call after both Motor_Init calls succeed. */
+HAL_StatusTypeDef Motor_SetDutyPercent(int32_t cn1_percent, int32_t cn2_percent);
 
 /* Call AFTER MX_TIMx_Init(). Timer must be TIM2/3/4, up-counting,
  * internally clocked, with ARR in [1, 65534]. CubeMX must configure both
@@ -50,6 +88,9 @@ typedef struct {
     float rpm;
     uint8_t valid;
 } Encoder_State;
+
+extern Encoder_State encoderA;
+extern Encoder_State encoderB;
 
 void Encoder_Reset(Encoder_State *s, uint16_t counter);
 /* Call frequently enough that actual movement is <32768 counts per sample.

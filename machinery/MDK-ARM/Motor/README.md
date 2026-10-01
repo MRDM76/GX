@@ -1,6 +1,8 @@
 # 电机库与 CubeMX 设置
 
-自定义库只保留 `motor.c`、`motor.h`。CubeMX 负责 GPIO、时钟、TIM2 PWM 和 TIM3/TIM4 编码器初始化；库负责启动 PWM、设置占空比和计算编码器反馈。main.c 已接入，默认两台电机停止。
+更新：`CSGO(CN1_RPM, CN2_RPM)` 已改为 PID 目标转速接口。先配置实际 CPR、方向和 PID 增益，再调用非零目标；主循环持续调用 Motor_Update。main.c 暂用 CSGO(0,0) 保持停止。见 [PID说明.md](PID说明.md)。旧百分比接口改名为 Motor_SetDutyPercent。
+
+电机与编码器在 `motor.c`、`motor.h`，独立 PID 算法在 `pid.c`、`pid.h`。CubeMX 负责 GPIO、时钟、TIM2 PWM 和 TIM3/TIM4 编码器初始化；库负责启动 PWM、设置占空比、计算反馈及闭环。
 
 ## 1. 系统和时钟
 
@@ -68,21 +70,29 @@ Project Manager → Code Generator 勾选保留用户代码（Keep User Code whe
 
 ```c
 #include "motor.h"
-static Motor_HandleTypeDef motorA, motorB;
-static Encoder_State encoderA, encoderB;
-
-/* MX_TIMx_Init 之后，实际 main.c 中还检查了返回值 */
-Motor_Init(&motorA, &htim2, TIM_CHANNEL_1, TIM_CHANNEL_2);
-Motor_Init(&motorB, &htim2, TIM_CHANNEL_4, TIM_CHANNEL_3);
-HAL_TIM_Encoder_Start(&htim3, TIM_CHANNEL_ALL);
-HAL_TIM_Encoder_Start(&htim4, TIM_CHANNEL_ALL);
-Encoder_Reset(&encoderA, (uint16_t)__HAL_TIM_GET_COUNTER(&htim3));
-Encoder_Reset(&encoderB, (uint16_t)__HAL_TIM_GET_COUNTER(&htim4));
+/* MX_TIM2/3/4_Init 之后 */
+if (Motor_SystemInit() != HAL_OK) { Error_Handler(); }
+/* 配置两路 Motor_PIDConfigure 后，可用 CSGO(30,30) 设置 30 RPM。 */
+if (CSGO(0, 0) != HAL_OK) { Error_Handler(); }
+/* while(1) 内 */
+(void)Motor_Update();
 ```
 
-主循环已经每隔至少 10ms 读取一次 TIM3/TIM4 计数并调用 Encoder_Sample，使用实际经过的毫秒数。
+Motor_SystemInit 封装两路 PWM 绑定与启动、编码器启动、首次计数和采样时间基准。失败会回退已启动资源；不重新配置 CubeMX 的 GPIO、时钟和定时器模式。
+Motor_Update 封装每隔至少 10ms 的编码器采样。motorA/motorB 和 encoderA/encoderB 都由 motor.c 定义、motor.h 声明，main.c 不再重复定义。
+当前 main.c 保持停止，待填入实际 CPR 和 PID 参数后启用非零目标；未烧录实测。
 
 ## 5. 使用接口
+
+双电机接口 `CSGO(CN1转速, CN2转速)` 在 motor.c 实现、motor.h 声明，单位为输出轴 RPM，支持小数。正负选方向，0 滑行停止并退出对应 PID。非零目标需要先配置该路 PID。任一路无效、未配置或运行中直接换向，返回 HAL_ERROR，两路原目标均保持。重复同方向目标不会清空积分。
+
+```c
+CSGO(30, 30);   /* 两台目标 +30 RPM */
+CSGO(0, 0);    /* 两台停止 */
+/* 等待电机停稳后再换向 */
+CSGO(30, -30);  /* CN1 +30 RPM，CN2 -30 RPM */
+Motor_SetDutyPercent(30, 30); /* 手动 30% PWM，退出两路 PID */
+```
 
 ```c
 Motor_SetSpeed(&motorA, 300);  /* 正方向 30%，不是 300 RPM */
@@ -101,7 +111,7 @@ Motor_Brake(&motorB);         /* AT8236 刹车 */
 
 ## 文件和验证
 
-- 参与编译的自定义库：motor.c、motor.h。原 n20/encoder 文件及过时接入脚本已移至 build/motor-simplify/old-library 备份。
+- 参与编译的自定义库：motor.c/motor.h、pid.c/pid.h。原 n20/encoder 文件及过时接入脚本已移至 build/motor-simplify/old-library 备份。
 - main.c 修改前备份：build/motor-simplify/main.c.before。
 - tim.c/tim.h 是 CubeMX 定时器代码；stm32f1xx_hal_tim.c、stm32f1xx_hal_tim_ex.c 是 ST 官方 HAL，继续保留。
 - ARMCC 全工程 21 个源文件编译链接通过；驱动与编码器逻辑测试通过。没有烧录或电机实测。
