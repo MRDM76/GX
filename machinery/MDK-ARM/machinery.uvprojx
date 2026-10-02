@@ -332,7 +332,7 @@
               <MiscControls />
               <Define>USE_HAL_DRIVER,STM32F103xB</Define>
               <Undefine />
-              <IncludePath>../Core/Inc;./Motor;D:/Environment/STM32CubeMX/Repository/STM32Cube_FW_F1_V1.8.7/Drivers/STM32F1xx_HAL_Driver/Inc/Legacy;D:/Environment/STM32CubeMX/Repository/STM32Cube_FW_F1_V1.8.7/Drivers/STM32F1xx_HAL_Driver/Inc;D:/Environment/STM32CubeMX/Repository/STM32Cube_FW_F1_V1.8.7/Drivers/CMSIS/Device/ST/STM32F1xx/Include;D:/Environment/STM32CubeMX/Repository/STM32Cube_FW_F1_V1.8.7/Drivers/CMSIS/Include</IncludePath>
+              <IncludePath>../Core/Inc;D:/Environment/STM32CubeMX/Repository/STM32Cube_FW_F1_V1.8.7/Drivers/STM32F1xx_HAL_Driver/Inc/Legacy;D:/Environment/STM32CubeMX/Repository/STM32Cube_FW_F1_V1.8.7/Drivers/STM32F1xx_HAL_Driver/Inc;D:/Environment/STM32CubeMX/Repository/STM32Cube_FW_F1_V1.8.7/Drivers/CMSIS/Device/ST/STM32F1xx/Include;D:/Environment/STM32CubeMX/Repository/STM32Cube_FW_F1_V1.8.7/Drivers/CMSIS/Include</IncludePath>
             </VariousControls>
           </Cads>
           <Aads>
@@ -375,16 +375,19 @@
       <Groups>
         <Group>
           <GroupName>Motor</GroupName>
-          <Files>
+          <Files><File><FileName>motor_command.c</FileName><FileType>1</FileType><FilePath>../Core/Src/motor_command.c</FilePath></File>
+<File><FileName>motor_uart.c</FileName><FileType>1</FileType><FilePath>../Core/Src/motor_uart.c</FilePath></File>
+<File><FileName>stm32f1xx_hal_uart.c</FileName><FileType>1</FileType><FilePath>D:/Environment/STM32CubeMX/Repository/STM32Cube_FW_F1_V1.8.7/Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_uart.c</FilePath></File>
+
             <File>
               <FileName>motor.c</FileName>
               <FileType>1</FileType>
-              <FilePath>./Motor/motor.c</FilePath>
+              <FilePath>../Core/Src/motor.c</FilePath>
             </File>
             <File>
               <FileName>pid.c</FileName>
               <FileType>1</FileType>
-              <FilePath>./Motor/pid.c</FilePath>
+              <FilePath>../Core/Src/pid.c</FilePath>
             </File>
           </Files>
         </Group>

@@ -1,104 +1,80 @@
-# PID 转速闭环使用说明
+# PID 与速度接口
 
-## 文件与职责
+## 参数统一放在 pid.c
 
-- `pid.c/pid.h`：独立于 HAL 的位置式 PID，可单独测试或用于其他控制对象。
-- `motor.c/motor.h`：将 PID 输出送到现有电机 PWM，在 Motor_Update 中利用编码器 RPM 闭环。仍由 CubeMX 配置 GPIO 和定时器，没有恢复 n20 包装层。
-- EIDE、Keil、构建检查脚本已加入 pid.c；包含路径仍为 Motor。
+`Motor_MeasuredCountsPID` 定义在 `pid.c`、声明在 `pid.h`：Kp=0.05、Ki=0.4、Kd=0，输出及积分范围0～300 PWM千分比，derivative_tau=0.03s。速度输入为四倍频编码器计数/秒；Ki在算法内乘实际dt，不要再预乘10ms。
 
-CSGO(CN1_RPM, CN2_RPM) 现在直接设置两路 PID 目标转速，支持小数。main.c 暂用 CSGO(0,0) 保持停止；完成 CPR/方向标定和增益配置后，可改为 CSGO(30,30)，表示两路目标 30 转/分钟。
+`Motor_FullScaleCountsPerSecond[2]` 同样在 pid.c，当前两路均6000计数/秒。它是百分比控制的100%参考速度，来自已测试工作点，不是最大速度的物理标定。修改范围后需要重新验证可达性和响应。
 
-## 控制过程
+实测数据见 [PID.md](../PID.md)。正式工程已把TIM2改为1kHz（时钟72MHz、PSC19、ARR3599），编码器输入上拉，sign=+1；快衰减、最大30% PWM。此前只验证单路正向3000/6000、每轮2秒，未证明其他速度、双路同时或长期运行性能。
+
+## CSGO 现在表示速度百分比
+
+按用户最新要求，`CSGO(first, second)` 接受两个有限的0～100浮点数：
 
 ```text
-目标 RPM → 与编码器 RPM 比较 → PID → 限幅后的 PWM → AT8236 → 电机
-                 ↑                                  ↓
-                 └────────── 霍尔编码器反馈 ─────────┘
+速度百分比 = 期望计数速度 / 满量程计数速度 × 100
+目标计数速度 = 百分比 × 满量程计数速度 / 100
 ```
-
-每路有独立 PID 状态，主循环仍只需调用 Motor_Update。内部每隔至少 10ms 读取编码器，以实际经过的秒数作为 dt，计算 PWM 千分比。
-
-PID 使用 P=Kp×误差、I 累加 Ki×误差×dt、D 为 -Kd×测量变化/dt。D 针对测量值而非目标值，目标突变不会产生微分冲击；derivative_tau 是 D 的一阶低通时间常数（秒）。
-积分值独立限幅，并在输出饱和且继续积分会加重饱和时暂停该方向积分。参数和计算输入出现 NaN/Inf、无效 dt 或算术溢出时返回失败。
-
-## 必要的实测参数
-
-1. CPR：输出轴每转一圈的四倍频计数，与电机具体减速比有关。当前没有这个数值，不能随意填通用 N20 数字。
-2. 编码器方向：低占空比正向运动时，反馈应为正；否则 Configure 的 sign 设为 -1。
-3. Kp、Ki、Kd：与具体电机、负载、采样及 CPR 有关，没有未经实测即可保证稳定的固定参数。
-
-这里输出单位为千分比：600 表示最高 60% PWM。Kp 单位为千分比/RPM，Ki 为千分比/(RPM·秒)，Kd 为千分比·秒/RPM。不能把按百分比计算的增益原样混用。
-
-## 初始化和启用
-
-CubeMX 初始化与 Motor_SystemInit 调用保持不变。配置在 Motor_SystemInit 成功之后执行，Configure 会先停止对应电机。以下是调用模板，`measured_cpr`、`tuned_kp/ki/kd` 等由实际标定和调参得到，不是项目中已定义的常量：
 
 ```c
-PID_Config speed_pid = {
-    .kp = tuned_kp,
-    .ki = tuned_ki,
-    .kd = tuned_kd,
-    .output_min = 0.0f,
-    .output_max = max_duty_percent * 10.0f,
-    .integral_min = 0.0f,
-    .integral_max = max_duty_percent * 10.0f,
-    .derivative_tau = derivative_filter_seconds
-};
-
-if (Motor_PIDConfigure(&motorA, measured_cpr_A, encoder_sign_A, &speed_pid) != HAL_OK ||
-    Motor_PIDConfigure(&motorB, measured_cpr_B, encoder_sign_B, &speed_pid) != HAL_OK)
-{
-    Error_Handler();
-}
-
-/* 两路可配置不同增益。目标单位为输出轴 RPM。 */
-if (CSGO(target_rpm_A, target_rpm_B) != HAL_OK)
-{
-    Motor_PIDDisable(&motorA);
-    Motor_PIDDisable(&motorB);
-    Error_Handler();
-}
-
-/* while(1) 中持续调用；CSGO 在目标改变时调用即可 */
-(void)Motor_Update();
+CSGO(50, 0);
+CSGO(0, 100);
+CSGO(0, 0);
 ```
 
-没有标定 CPR、sign 不是 ±1、全零 P/I 参数、output_min 不是 0 或输出上限不在 (0,1000] 时，电机闭环配置失败。泛用 PID 内核允许单独 D，电机转速接口要求至少有 P 或 I。
+依次代表CN1目标3000/CN2停止，CN1停止/CN2目标6000，两路停止。这里100%速度不等于100% PWM，输出仍限30%。越界、负数、NaN/Inf或任一路未配置时返回HAL_ERROR，先校验两路再修改目标。重复同向目标保留积分。
 
-## 对外接口
+四字符串口把两位编码00～99映射为0～100%后调用CSGO；因此串口 `3060` 不是直接调用CSGO(30,60)。编码限制、回执和接线见 [串口通信.md](../串口通信.md)。
 
-| 接口 | 行为 |
-|---|---|
-| Motor_PIDConfigure | 设置 CPR、方向和 PID 参数，停止选中的电机，准备闭环 |
-| Motor_SetTargetRPM | 设置有符号输出轴 RPM，并启用闭环；0 退出闭环并滑行停止 |
-| Motor_PIDDisable | 退出闭环、清空 PID 状态并滑行停止 |
-| Motor_PIDIsEnabled | 查询该电机闭环是否启用 |
-| Motor_Update | 采样并控制，HAL_BUSY 尚未到周期，HAL_TIMEOUT 采样无效，HAL_ERROR 配置/计算/输出错误 |
-| CSGO | 同时设置 CN1/CN2 目标 RPM；先验证两路，任一路无效则两路原目标保持；0 停止 |
-| Motor_SetDutyPercent、Motor_SetSpeed | 退出 PID，切回手动占空比；前者控制两路百分比 |
-| Motor_Stop/Brake/DeInit | 关闭该电机 PID，防止下一次采样覆盖停止/刹车命令 |
+## 初始化与主循环
 
-motorA=CN1，motorB=CN2。PID 通过内部输出函数写 PWM，不会关闭自己。所有调用从同一个主循环上下文执行。
-RPM 正负选择转向。控制器在目标方向上只输出非负 PWM 幅值；超速时减小至零，不通过反向扭矩主动刹车。运行中直接改变目标符号会返回 HAL_ERROR，原目标保持；应先目标置 0、等待负载降速，再给反向目标。
+当前 main.c 已接入以下顺序，上电不自动运行：
 
-## 异常和实际边界
+```c
+if (Motor_SystemInit() != HAL_OK) { Error_Handler(); }
+if (Motor_UARTInit() != HAL_OK) { Error_Handler(); }
+if (CSGO(0, 0) != HAL_OK) { Error_Handler(); }
+```
 
-- 采样间隔超过 100ms、计数差恰好半范围、累计溢出等产生无效样本时，Motor_Update 停止所有当前处于 PID 模式的电机并关闭闭环；不会自动恢复。排查后重新调用目标接口才重新启用。
-- 闭环中直接改 encoderA/B.counts_per_turn 或 sign 会被识别为配置变化，下一次采样关闭闭环并停止；应停止后用 Configure 重新配置。
-- 每采样实际计数变化必须小于 32768，否则 16 位计数回绕无法唯一判断。
-- 超时处理依赖主循环再次调用 Motor_Update；没有独立硬件看门狗，主循环完全卡死时不能承诺自动停机。
-- 零计数也可能是静止、堵转或信号断线，本库不能区分，PID 可能提升到配置的占空比上限；尚未实现堵转、断线、电流保护策略。
-- 未实现速度斜坡、负载识别或自动调参。当前测量是采样窗内的平均 RPM，低速会有计数量化波动。开始调试可先用 PI（Kd=0），按实际响应小幅调整增益和输出上限。
+`Motor_UARTInit()` 配置两路计数PI并初始化USART1。主循环持续执行 `Motor_UARTPoll()`；它处理通信、调用Motor_Update并在控制故障时锁存停机，不要再重复调用Motor_Update。
+
+不使用串口时，在Motor_SystemInit之后分别用 `Motor_PIDConfigureCounts(&motorA, 1, &Motor_MeasuredCountsPID)`、motorB对应调用配置两路，然后主循环调用Motor_Update、由应用处理其错误。所有电机API只能在同一个前台上下文调用，中断仅放入接收队列。
+
+## 其他接口与兼容性
+
+| 接口 | 单位及作用 |
+| --- | --- |
+| `CSGO` | 两路0～100%参考速度；新语义，不能再当RPM调用 |
+| `Motor_SetTargetsRPM` | 旧CSGO的双路有符号RPM行为，需真实CPR与RPM参数 |
+| `Motor_PIDConfigure` / `Motor_SetTargetRPM` | 配置和控制单路RPM，零CPR不允许配置 |
+| `Motor_PIDConfigureCounts` | 配置计数闭环，自动停止该路、清积分、CPR置0，默认300ms无反馈保护 |
+| `Motor_SetTargetCountsPerSecond` / `Motor_SetTargetsCountsPerSecond` | 直接设置有符号计数速度；无百分比缩放 |
+| `Motor_SetFeedbackTimeout` | 停止闭环时设置无反馈保护，10～60000ms，0禁用；运行中返回HAL_BUSY |
+| `Motor_SetDutyPercent` / `Motor_SetSpeed` | 开环PWM百分比 / 千分比，退出PID；不是目标转速 |
+| `Motor_Stop` / `Motor_Brake` / `Motor_DeInit` | 关闭PID并滑行停止 / AT8236刹车 / 释放资源 |
+| `Motor_PIDIsEnabled` | 查询该路是否启用闭环 |
+
+历史调用代码需迁移：原 `CSGO(30,30)` 若意图为30RPM，现在应写 `Motor_SetTargetsRPM(30,30)`。计数模式与RPM模式的非零目标不能混用；零目标可以停止任意模式。
+
+若以后得到真实输出轴四倍频CPR，可用 `PID_MakeRPMConfig(cpr, &config)` 按CPR/60换算Kp/Ki/Kd，输出和积分限幅保持不变，再配置RPM接口；零CPR或空输出指针返回0。当前串口百分比控制不需要CPR，不输出伪造RPM。
+
+## 控制与故障边界
+
+每路PID独立：位置式P/I/D、按实际dt积分、测量微分及低通滤波、条件积分抗饱和、输出/积分限幅和非有限数值检查。更新周期至少10ms，计数窗口1个计数对应约100计数/秒的量化台阶。
+
+控制只按目标方向输出单向PWM，超速可降至零但不反向刹车。有符号接口换向必须先置零并等待负载降速；没有机械停稳检测。百分比接口只允许正向。
+
+采样间隔超过100ms、16位计数差恰好半范围、累计溢出、CPR/sign被外部篡改或PID计算错误时，停止活动闭环。每次实际位移应小于32768计数，否则无法唯一还原回绕。
+
+有非零PWM而持续零净计数时累计无反馈时间；达到阈值返回HAL_TIMEOUT并停止活动闭环。非零计数重置时间；超时后不自动重启。RPM模式默认禁用这项保护以兼容极低速，可按需开启。
+
+该保护不能区分堵转、断线或低速，也不能检测所有噪声和反向反馈；没有电流保护。USART应用另有500ms失联保护与故障锁存，恢复先发0000。所有软件超时依赖主循环，正式固件未新增硬件看门狗。
+
+实际反馈读 `encoderA/B.counts_per_second`，并检查 `valid`；未标定CPR时 `rpm=0` 没有真实RPM测量意义。串口ACK回报的是设置值，不是实际反馈。
 
 ## 验证
 
-泛用 PID 测试覆盖 P/I、不同 dt、积分/输出限幅、饱和后恢复、微分滤波、目标突变不产生 D 冲击、非法输入，以及模拟一阶对象的目标跟踪与负载变化。这些是软件数值测试，不能证明实机 N20 已调好。
-电机联调测试覆盖 CPR/方向校验、两路正负 RPM 输出、超速不反转、零目标停止、手动接管、采样超时停机、CPR 被改动、毫秒计数回绕。
-ARMCC 编译链接通过（22 个源文件）。未烧录或上板调参。
+`.\Motor\tests\run_msvc.cmd`：MSVC C11 /W4 /WX，PID、电机、编码器、协议和UART适配五组测试通过。覆盖比例映射、参数换算、限幅、正负底层目标、单位隔离、换向限制、半帧/超长/非法帧、失联锁存、UART错误/溢出、TX缓冲寿命与背压等。
 
-```powershell
-gcc -std=c99 -Wall -Wextra -Werror -I Motor Motor/tests/test_pid.c Motor/pid.c -lm -o build/motor-check/test_pid.exe
-.\build\motor-check\test_pid.exe
-gcc -std=c99 -Wall -Wextra -Werror -I Motor/tests -I Motor Motor/tests/test_motor.c Motor/motor.c Motor/pid.c -o build/motor-check/test_motor.exe
-.\build\motor-check\test_motor.exe
-```
+EIDE+ARMCC5全工程24个C文件、1个汇编文件构建通过。本次新固件尚未烧录；既有实机PID结果不等同于新串口控制已完成硬件验收。

@@ -13,6 +13,13 @@ int main(void)
     PID_Config cfg = {2, 1, 0, 0, 100, 0, 100, 0};
     float out, old_integral;
     int i;
+    PID_Config rpm_config;
+    assert(!PID_MakeRPMConfig(0, &rpm_config));
+    assert(!PID_MakeRPMConfig(600, NULL));
+    assert(PID_MakeRPMConfig(600, &rpm_config));
+    near_value(rpm_config.kp, 0.5f, 0.0001f);
+    near_value(rpm_config.ki, 4.0f, 0.0001f);
+    assert(rpm_config.output_max == 300.0f);
     assert(!PID_Update(&p, 1, 0, 0.01f, &out));
     assert(PID_Init(&p, &cfg));
     assert(PID_Update(&p, 10, 0, 0.1f, &out));

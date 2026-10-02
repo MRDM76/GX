@@ -24,6 +24,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "motor.h"
+#include "motor_uart.h"
 
 /* USER CODE END Includes */
 
@@ -97,8 +98,10 @@ int main(void)
   {
     Error_Handler();
   }
-  /* Configure both motors with Motor_PIDConfigure before nonzero RPM.
-   * After calibration, use CSGO(30, 30) for +30 RPM on CN1/CN2. */
+  if (Motor_UARTInit() != HAL_OK)
+  {
+    Error_Handler();
+  }
   if (CSGO(0, 0) != HAL_OK)
   {
     Error_Handler();
@@ -113,7 +116,7 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    (void)Motor_Update();
+    Motor_UARTPoll();
   }
   /* USER CODE END 3 */
 }

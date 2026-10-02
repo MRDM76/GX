@@ -1,121 +1,47 @@
 # 电机库与 CubeMX 设置
 
-更新：`CSGO(CN1_RPM, CN2_RPM)` 已改为 PID 目标转速接口。先配置实际 CPR、方向和 PID 增益，再调用非零目标；主循环持续调用 Motor_Update。main.c 暂用 CSGO(0,0) 保持停止。见 [PID说明.md](PID说明.md)。旧百分比接口改名为 Motor_SetDutyPercent。
+当前入口：`CSGO(CN1速度百分比, CN2速度百分比)`，范围0～100；零停止。不是RPM，也不是PWM占空比。PID参数与100%参考速度已集中到 `pid.c`；详见 [PID说明.md](PID说明.md)。四字符串口已接入，见 [串口通信.md](../串口通信.md)；历史实测见 [PID.md](../PID.md)。
 
-电机与编码器在 `motor.c`、`motor.h`，独立 PID 算法在 `pid.c`、`pid.h`。CubeMX 负责 GPIO、时钟、TIM2 PWM 和 TIM3/TIM4 编码器初始化；库负责启动 PWM、设置占空比、计算反馈及闭环。
+## 当前硬件配置
 
-## 1. 系统和时钟
+- SYS Debug=Serial Wire，保留SWD、释放PA15/PB3；HSE8MHz、PLL×9、SYSCLK72MHz、APB1/2，TIM2时钟72MHz。
+- TIM2：内部时钟、向上计数、PSC19、ARR3599，即1kHz；四路PWM mode1、active high、初始Pulse0，TIM2 Partial Remap1。
+- TIM3/TIM4：Encoder TI1 and TI2、PSC0、ARR65535、输入Direct TI、DIV1、Rising极性、IC1/IC2 Filter6；PA6/PA7/PB6/PB7均上拉输入。四倍频计数，不是只计单相上升沿。
+- `Core/tim.c` 与 `.ioc` 已同步上述定时器和上拉配置。USART1当前由自定义motor_uart.c初始化，不在CubeMX中重复生成。
 
-- System Core → SYS → Debug：Serial Wire，释放 PA15/PB3 并保留下载调试。
-- System Core → RCC → HSE：Crystal/Ceramic Resonator。
-- Clock Configuration：HSE 8MHz，PLL ×9，SYSCLK/HCLK 72MHz，APB1 /2，确认 APB1 timer clocks = 72MHz。
+| 信号 | MCU引脚 | 用途 |
+| --- | --- | --- |
+| TIM2_CH1 / CH2 | PA15 / PB3 | CN1的AT8236 IN1 / IN2 |
+| TIM2_CH4 / CH3 | PA3 / PA2 | CN2的AT8236 IN1 / IN2 |
+| TIM3_CH1 / CH2 | PA6 / PA7 | CN1编码器A/B |
+| TIM4_CH1 / CH2 | PB6 / PB7 | CN2编码器A/B |
+| USART1_TX / RX | PA9 / PA10 | U9第3/4脚；TX网名USART2_TX为误标 |
 
-## 2. TIM2：两台电机的 PWM
+正常电机输出使用快衰减：IN1 PWM/IN2低为正向，反之为负向；两输入低为滑行，两输入高为AT8236刹车。电机VIN与编码器3.3V必须正常供电，不能仅依靠下载器或USB-TTL。
 
-Timers → TIM2：勾选 Internal Clock，Channel1～4 分别选择 PWM Generation CH1～CH4。
+## 主程序与工程
 
-| 参数 | 设置 |
-|---|---|
-| Prescaler | 0 |
-| Counter Mode | Up |
-| Counter Period | 3599 |
-| Clock Division | No Division |
-| PWM Mode | PWM mode 1 |
-| 各通道 Pulse | 0 |
-| 各通道 Output Polarity | High |
+main.c顺序执行CubeMX GPIO/TIM2/3/4初始化、Motor_SystemInit、Motor_UARTInit、CSGO(0,0)。主循环执行Motor_UARTPoll，它内部负责Motor_Update。上电不运动，接收有效指令才启用闭环。
 
-72MHz / (0+1) / (3599+1) = 20kHz。确认实际引脚如下，不要使用 TIM2 默认 PA0/PA1：
+EIDE源文件包括motor.c、pid.c、motor_command.c、motor_uart.c和HAL UART驱动，编译宏包含HAL_UART_MODULE_ENABLED。Keil源文件/宏同步添加；当前实际验证采用EIDE+ARMCC5，原uVision工程其他旧驱动绝对路径未在本次统一迁移。CubeMX重生成后须保留USER CODE并检查自定义文件、Motor包含路径、HAL UART宏。
 
-| 引脚 | 功能 | 原理图连接 |
-|---|---|---|
-| PA15 | TIM2_CH1 | CN1 的 AT8236 IN1 |
-| PB3 | TIM2_CH2 | CN1 的 AT8236 IN2 |
-| PA2 | TIM2_CH3 | CN2 的 AT8236 IN2 |
-| PA3 | TIM2_CH4 | CN2 的 AT8236 IN1 |
+不要同时生成另一个USART1初始化/IRQ/回调；若改成CubeMX管理串口，应迁移motor_uart.c的适配层并确保单一硬件所有者。不要让USART2占用PA2/PA3，也不要重映射USART1到PB6/PB7。
 
-在 Pinout 上为 PA15/PB3 指定上述功能。生成代码应包含 `__HAL_AFIO_REMAP_TIM2_PARTIAL_1()`。
+## 常用接口
 
-## 3. TIM3/TIM4：霍尔编码器输入
+- `CSGO(50,0)`：CN1为满量程的50%，当前3000计数/秒；CN2停止。
+- `CSGO(0,0)`：两路停止并退出闭环。
+- `Motor_SetTargetsRPM`：旧CSGO的RPM接口；必须标定真实CPR并换算增益。
+- `Motor_SetDutyPercent(30,30)`：手动30% PWM，退出两路PID。
+- `Motor_SetSpeed(&motorA,300)`：手动PWM千分比，即30%，不是速度。
+- `Motor_Stop/Brake/DeInit`：停止、刹车、释放资源。
 
-分别打开 TIM3、TIM4，Combined Channels 选择 Encoder Mode。CH1/CH2 由该模式占用，不单独选 PWM；不要选择 Internal Clock 作为编码器计数源。
+所有电机API由一个主循环上下文调用。首次使用自定义句柄前清零，底层初始化要求TIM2/3/4、向上内部计时、ARR1～65534、两个不同且空闲的PWM通道。
 
-| 参数 | 两个定时器均设置 |
-|---|---|
-| Encoder Mode | Encoder Mode TI1 and TI2 |
-| Prescaler | 0 |
-| Counter Period | 65535 |
-| Clock Division | No Division |
-| IC1/IC2 Polarity | Rising Edge |
-| IC1/IC2 Selection | Direct TI |
-| IC1/IC2 Prescaler | DIV1 |
-| IC1/IC2 Filter | 6 |
+encoderA/B提供delta、64位累计position、counts_per_second、rpm与valid。CPR为输出轴每圈四倍频计数；CPR=0表示未标定，rpm的0没有测量意义。不要为所有N20假设同一减速比或CPR。
 
-TIM3：PA6=CH1、PA7=CH2；TIM4：PB6=CH1、PB7=CH2。GPIO 为输入。当前生成代码是 No Pull；若实际霍尔输出为开漏且电机板没有上拉，需要在 GPIO Settings 设置 Pull-up（上拉到 MCU 3.3V）。
-TI1 and TI2 使用 A/B 两相解码，四倍频计数；这里的 Rising Edge 是输入极性设置，不代表只计每相上升沿。
-本方案轮询计数，不需要开启 TIM2/3/4 的 NVIC 中断或 DMA。
+## 验证与限制
 
-## 4. 生成与接入
+运行 `.\Motor\tests\run_msvc.cmd`：五组主机测试通过；EIDE+ARMCC5全工程构建通过。本轮未烧录/实物UART联调。历史单路正向3000、6000计数/秒实测不能代替低速、双路同时或长期工况的验收。
 
-点击 Generate Code，确认 main.c 中按顺序调用：
-
-```c
-MX_GPIO_Init();
-MX_TIM2_Init();
-MX_TIM3_Init();
-MX_TIM4_Init();
-```
-
-Project Manager → Code Generator 勾选保留用户代码（Keep User Code when re-generating）。
-本工程已经生成上述正确配置；库的调用放在 USER CODE 区域：
-
-```c
-#include "motor.h"
-/* MX_TIM2/3/4_Init 之后 */
-if (Motor_SystemInit() != HAL_OK) { Error_Handler(); }
-/* 配置两路 Motor_PIDConfigure 后，可用 CSGO(30,30) 设置 30 RPM。 */
-if (CSGO(0, 0) != HAL_OK) { Error_Handler(); }
-/* while(1) 内 */
-(void)Motor_Update();
-```
-
-Motor_SystemInit 封装两路 PWM 绑定与启动、编码器启动、首次计数和采样时间基准。失败会回退已启动资源；不重新配置 CubeMX 的 GPIO、时钟和定时器模式。
-Motor_Update 封装每隔至少 10ms 的编码器采样。motorA/motorB 和 encoderA/encoderB 都由 motor.c 定义、motor.h 声明，main.c 不再重复定义。
-当前 main.c 保持停止，待填入实际 CPR 和 PID 参数后启用非零目标；未烧录实测。
-
-## 5. 使用接口
-
-双电机接口 `CSGO(CN1转速, CN2转速)` 在 motor.c 实现、motor.h 声明，单位为输出轴 RPM，支持小数。正负选方向，0 滑行停止并退出对应 PID。非零目标需要先配置该路 PID。任一路无效、未配置或运行中直接换向，返回 HAL_ERROR，两路原目标均保持。重复同方向目标不会清空积分。
-
-```c
-CSGO(30, 30);   /* 两台目标 +30 RPM */
-CSGO(0, 0);    /* 两台停止 */
-/* 等待电机停稳后再换向 */
-CSGO(30, -30);  /* CN1 +30 RPM，CN2 -30 RPM */
-Motor_SetDutyPercent(30, 30); /* 手动 30% PWM，退出两路 PID */
-```
-
-```c
-Motor_SetSpeed(&motorA, 300);  /* 正方向 30%，不是 300 RPM */
-Motor_SetSpeed(&motorB, -300); /* 反方向 30% */
-Motor_Stop(&motorA);          /* 滑行停止 */
-Motor_Brake(&motorB);         /* AT8236 刹车 */
-```
-
-占空比参数范围 -1000～1000，超出限幅；0 停止。运动中换向前先停止，等待负载降速。初始化本身不让电机转动。所有函数在同一个主循环上下文使用。
-
-`encoderA/encoderB` 保存反馈：delta=本次增量，position=累计计数，counts_per_second=计数/秒，rpm=标定后的输出轴转速，valid=本次采样是否有效。
-默认 counts_per_turn=0，表示未标定，rpm 的 0 没有测量意义。获得实际 CPR 后，在启动测量前设置 `encoderA.counts_per_turn = cpr;`，B 同理；需反转反馈方向时设置 sign=-1。
-输出轴 CPR 是四倍频后每圈计数。可以缓慢转动输出轴数圈进行测量；不要给所有 N20 假定同一个减速比或 CPR。
-
-每次采样变化应小于 32768 计数。间隔超过 100ms、恰好半个计数范围或累计溢出时，该次采样无效；超时丢失区间不计入累计位置。避免长时间阻塞主循环，读取反馈时检查 valid。
-
-## 文件和验证
-
-- 参与编译的自定义库：motor.c/motor.h、pid.c/pid.h。原 n20/encoder 文件及过时接入脚本已移至 build/motor-simplify/old-library 备份。
-- main.c 修改前备份：build/motor-simplify/main.c.before。
-- tim.c/tim.h 是 CubeMX 定时器代码；stm32f1xx_hal_tim.c、stm32f1xx_hal_tim_ex.c 是 ST 官方 HAL，继续保留。
-- ARMCC 全工程 21 个源文件编译链接通过；驱动与编码器逻辑测试通过。没有烧录或电机实测。
-- 测试文件在 Motor/tests，仅用于电脑测试；其模拟 HAL 头文件不能加到固件包含路径。
-- 构建检查：`powershell -NoProfile -ExecutionPolicy Bypass -File Motor/build_check.ps1`。
-
-电机资料：[立创 N20 霍尔编码器电机](https://wiki.lckfb.com/zh-hans/tjx-tms320f28p550/module/control/n20-hall-encoder-motor.html)。本板 CN1/CN2 第 1、6 脚为 AT8236 电机功率输出，第 2、5 脚为编码器电源和地，第 3、4 脚为编码器反馈。实际线束须按信号核对脚序，VIN 应匹配所用电机额定电压。
+速度比例的100%参考为6000计数/秒，PID最高输出30% PWM。串口失联500ms、已有非零PWM无反馈300ms、非法帧或队列溢出都会停机。故障后串口先发0000再运动。软件超时不是硬件急停、独立看门狗或电流保护。

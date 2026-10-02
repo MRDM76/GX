@@ -45,13 +45,18 @@ HAL_StatusTypeDef Motor_PIDConfigure(Motor_HandleTypeDef *motor, uint32_t cpr,
  * Overspeed reduces PWM to zero; PID does not reverse torque to brake.
  */
 HAL_StatusTypeDef Motor_SetTargetRPM(Motor_HandleTypeDef *motor, float rpm);
+HAL_StatusTypeDef Motor_PIDConfigureCounts(Motor_HandleTypeDef *motor,
+                                           int8_t sign, const PID_Config *config);
+HAL_StatusTypeDef Motor_SetTargetCountsPerSecond(Motor_HandleTypeDef *motor,
+                                                float counts_per_second);
+HAL_StatusTypeDef Motor_SetTargetsCountsPerSecond(float cn1, float cn2);
+HAL_StatusTypeDef Motor_SetFeedbackTimeout(Motor_HandleTypeDef *motor,
+                                          uint32_t timeout_ms);
 HAL_StatusTypeDef Motor_PIDDisable(Motor_HandleTypeDef *motor);
 uint8_t Motor_PIDIsEnabled(const Motor_HandleTypeDef *motor);
 
-/* CN1/CN2 signed output-shaft RPM targets. Requires PIDConfigure for each
- * nonzero target. Both requests validated before either target changes.
- * Call Motor_Update continuously. Zero stops; stop before reversing. */
-HAL_StatusTypeDef CSGO(float cn1_rpm, float cn2_rpm);
+HAL_StatusTypeDef Motor_SetTargetsRPM(float cn1_rpm, float cn2_rpm);
+HAL_StatusTypeDef CSGO(float cn1_speed_percent, float cn2_speed_percent);
 
 /* Signed integer PWM percentages, clamped to [-100, 100].
  * Positive/negative select direction; zero coasts. Not RPM or PID.

@@ -1,6 +1,24 @@
 #include "pid.h"
 #include <float.h>
 
+const PID_Config Motor_MeasuredCountsPID = {
+    0.05f, 0.4f, 0.0f, 0.0f, 300.0f, 0.0f, 300.0f, 0.03f
+};
+
+const float Motor_FullScaleCountsPerSecond[2] = {6000.0f, 6000.0f};
+
+int PID_MakeRPMConfig(uint32_t cpr, PID_Config *config)
+{
+    float scale;
+    if (cpr == 0U || config == 0) return 0;
+    scale = (float)cpr / 60.0f;
+    *config = Motor_MeasuredCountsPID;
+    config->kp *= scale;
+    config->ki *= scale;
+    config->kd *= scale;
+    return 1;
+}
+
 static int finite_value(float value)
 {
     return value == value && value <= FLT_MAX && value >= -FLT_MAX;

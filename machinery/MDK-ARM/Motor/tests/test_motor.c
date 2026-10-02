@@ -1,5 +1,6 @@
 #include <assert.h>
 #include <stdio.h>
+#include <math.h>
 #include "motor.h"
 
 TIM_TypeDef test_tim2, test_tim3, test_tim4;
@@ -122,19 +123,19 @@ int main(void)
     puts("PASS: Motor_SystemInit rollback/retry, Motor_SetDutyPercent(30,30), Motor_Update timing and feedback");
     {
         PID_Config cfg = {2, 1, 0, 0, 600, 0, 600, 0.02f};
-        assert(CSGO(30, 30) == HAL_ERROR);
-        assert(CSGO(0, 0) == HAL_OK);
+        assert(Motor_SetTargetsRPM(30, 30) == HAL_ERROR);
+        assert(Motor_SetTargetsRPM(0, 0) == HAL_OK);
         assert(Motor_SetTargetRPM(&motorA, 100) == HAL_ERROR);
         assert(Motor_PIDConfigure(&motorA, 0, 1, &cfg) == HAL_ERROR);
         assert(Motor_PIDConfigure(&motorA, 600, 0, &cfg) == HAL_ERROR);
         assert(Motor_PIDConfigure(&motorA, 600, 1, &cfg) == HAL_OK);
-        assert(CSGO(100, 100) == HAL_ERROR);
+        assert(Motor_SetTargetsRPM(100, 100) == HAL_ERROR);
         assert(!Motor_PIDIsEnabled(&motorA));
         assert(Motor_PIDConfigure(&motorB, 600, 1, &cfg) == HAL_OK);
-        assert(CSGO(100, -100) == HAL_OK);
-        assert(CSGO(0, 100) == HAL_ERROR);
+        assert(Motor_SetTargetsRPM(100, -100) == HAL_OK);
+        assert(Motor_SetTargetsRPM(0, 100) == HAL_ERROR);
         assert(Motor_PIDIsEnabled(&motorA));
-        assert(CSGO(100, -100) == HAL_OK);
+        assert(Motor_SetTargetsRPM(100, -100) == HAL_OK);
         assert(Motor_SetTargetRPM(&motorA, -100) == HAL_ERROR);
         assert(Motor_PIDIsEnabled(&motorA));
         tick += 10;
@@ -171,8 +172,94 @@ int main(void)
         assert(Motor_Update() == HAL_OK);
         assert(encoderA.rpm == 100.0f);
         assert(CSGO(0, 0) == HAL_OK);
+        assert(CSGO(30, 30) == HAL_ERROR);
         assert(!Motor_PIDIsEnabled(&motorA) && !Motor_PIDIsEnabled(&motorB));
         puts("PASS: RPM PID configuration, signed outputs, overspeed, manual takeover, timeout stop, calibration tamper, tick wrap");
+    }
+    {
+        unsigned int sample;
+        assert(Motor_PIDConfigureCounts(NULL, 1, &Motor_MeasuredCountsPID) == HAL_ERROR);
+        assert(Motor_PIDConfigureCounts(&motorA, 0, &Motor_MeasuredCountsPID) == HAL_ERROR);
+        assert(Motor_PIDConfigureCounts(&motorA, 1, NULL) == HAL_ERROR);
+        assert(Motor_SetTargetCountsPerSecond(&motorA, 3000) == HAL_ERROR);
+        assert(Motor_PIDConfigureCounts(&motorA, 1, &Motor_MeasuredCountsPID) == HAL_OK);
+        assert(encoderA.counts_per_turn == 0 && !encoderA.valid);
+        assert(Motor_SetTargetRPM(&motorA, 3000) == HAL_ERROR);
+        assert(Motor_SetTargetsCountsPerSecond(3000, 6000) == HAL_ERROR);
+        assert(!Motor_PIDIsEnabled(&motorA));
+        assert(Motor_PIDConfigureCounts(&motorB, 1, &Motor_MeasuredCountsPID) == HAL_OK);
+        assert(Motor_SetTargetsCountsPerSecond(3000, NAN) == HAL_ERROR);
+        assert(Motor_SetTargetCountsPerSecond(&motorA, INFINITY) == HAL_ERROR);
+        assert(Motor_SetFeedbackTimeout(&motorA, 9) == HAL_ERROR);
+        assert(Motor_SetFeedbackTimeout(&motorA, 60001) == HAL_ERROR);
+        assert(Motor_SetTargetsCountsPerSecond(3000, 6000) == HAL_OK);
+        assert(Motor_SetFeedbackTimeout(&motorA, 300) == HAL_BUSY);
+        tick += 10;
+        assert(Motor_Update() == HAL_OK);
+        assert(TIM2->CCR[0] == 583 && TIM2->CCR[3] == 1080);
+        assert(Motor_SetTargetsCountsPerSecond(0, -6000) == HAL_ERROR);
+        assert(Motor_PIDIsEnabled(&motorA));
+        TIM3->CNT += 30;
+        TIM4->CNT += 60;
+        tick += 10;
+        assert(Motor_Update() == HAL_OK);
+        assert(encoderA.counts_per_second == 3000 && encoderA.rpm == 0);
+        assert(TIM2->CCR[0] == 43);
+        assert(Motor_SetTargetsCountsPerSecond(3000, 6000) == HAL_OK);
+        TIM3->CNT += 30;
+        TIM4->CNT += 60;
+        tick += 10;
+        assert(Motor_Update() == HAL_OK && TIM2->CCR[0] == 43);
+        for (sample = 0; sample < 29; ++sample)
+        {
+            tick += 10;
+            assert(Motor_Update() == HAL_OK);
+            assert(TIM2->CCR[0] <= 1080 && TIM2->CCR[3] <= 1080);
+        }
+        tick += 10;
+        assert(Motor_Update() == HAL_TIMEOUT);
+        assert(!Motor_PIDIsEnabled(&motorA) && !Motor_PIDIsEnabled(&motorB));
+        assert((TIM2->CCR[0] | TIM2->CCR[1] | TIM2->CCR[2] | TIM2->CCR[3]) == 0);
+        tick += 10;
+        assert(Motor_Update() == HAL_OK && !Motor_PIDIsEnabled(&motorA));
+        assert(Motor_SetFeedbackTimeout(&motorA, 0) == HAL_OK);
+        assert(Motor_SetTargetCountsPerSecond(&motorA, -3000) == HAL_OK);
+        tick += 10;
+        assert(Motor_Update() == HAL_OK && TIM2->CCR[1] == 583);
+        assert(Motor_SetTargetsCountsPerSecond(0, 0) == HAL_OK);
+        assert(Motor_SetFeedbackTimeout(&motorA, 20) == HAL_OK);
+        assert(Motor_SetTargetCountsPerSecond(&motorA, 3000) == HAL_OK);
+        tick += 10;
+        assert(Motor_Update() == HAL_OK);
+        tick += 10;
+        assert(Motor_Update() == HAL_OK);
+        TIM3->CNT += 1;
+        tick += 10;
+        assert(Motor_Update() == HAL_OK);
+        tick += 10;
+        assert(Motor_Update() == HAL_OK);
+        tick += 10;
+        assert(Motor_Update() == HAL_TIMEOUT);
+        assert(Motor_SetTargetCountsPerSecond(&motorA, 3000) == HAL_OK);
+        encoderA.sign = -1;
+        tick += 10;
+        assert(Motor_Update() == HAL_ERROR && !Motor_PIDIsEnabled(&motorA));
+        assert(Motor_PIDConfigureCounts(&motorA, -1, &Motor_MeasuredCountsPID) == HAL_OK);
+        assert(Motor_SetTargetCountsPerSecond(&motorA, 3000) == HAL_OK);
+        TIM3->CNT -= 30;
+        tick += 10;
+        assert(Motor_Update() == HAL_OK && encoderA.counts_per_second == 3000);
+        assert(CSGO(0, 0) == HAL_OK);
+        assert(CSGO(-1, 0) == HAL_ERROR);
+        assert(CSGO(0, 101) == HAL_ERROR);
+        assert(CSGO(NAN, 0) == HAL_ERROR);
+        assert(CSGO(0, INFINITY) == HAL_ERROR);
+        assert(CSGO(50, 100) == HAL_OK);
+        tick += 10;
+        assert(Motor_Update() == HAL_OK);
+        assert(TIM2->CCR[0] == 583 && TIM2->CCR[3] == 1080);
+        assert(CSGO(0, 0) == HAL_OK);
+        puts("PASS: measured counts PI, unit isolation, atomic targets, cap, repeat target, feedback timeout/recovery, sign, finite inputs");
     }
     return 0;
 }

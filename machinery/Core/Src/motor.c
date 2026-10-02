@@ -9,9 +9,17 @@ Encoder_State encoderB;
 static uint32_t encoderTick;
 static uint8_t systemReady;
 
+typedef enum {
+    MOTOR_SPEED_RPM,
+    MOTOR_SPEED_COUNTS
+} Motor_SpeedUnit;
+
 typedef struct {
     PID_Controller pid;
-    float target_rpm;
+    float target;
+    Motor_SpeedUnit unit;
+    uint32_t feedback_timeout_ms;
+    uint32_t no_feedback_ms;
     uint32_t cpr;
     int8_t sign;
     uint8_t configured;
@@ -20,7 +28,7 @@ typedef struct {
 
 static Motor_SpeedControl speedControl[2];
 static HAL_StatusTypeDef apply_duty(Motor_HandleTypeDef *motor, int32_t duty);
-static HAL_StatusTypeDef speed_update(float dt);
+static HAL_StatusTypeDef speed_update(uint32_t elapsed_ms);
 
 static Motor_SpeedControl *speed_control(const Motor_HandleTypeDef *motor)
 {
@@ -35,7 +43,8 @@ static void disable_speed_control(Motor_HandleTypeDef *motor)
     if (control != NULL)
     {
         control->enabled = 0U;
-        control->target_rpm = 0.0f;
+        control->target = 0.0f;
+        control->no_feedback_ms = 0U;
         PID_Reset(&control->pid);
     }
 }
@@ -94,7 +103,7 @@ HAL_StatusTypeDef Motor_Update(void)
         if (speedControl[1].enabled) (void)Motor_Stop(&motorB);
         return HAL_TIMEOUT;
     }
-    return speed_update((float)elapsed * 0.001f);
+    return speed_update(elapsed);
 }
 
 static int channel_valid(uint32_t channel)
@@ -253,13 +262,15 @@ HAL_StatusTypeDef Motor_DeInit(Motor_HandleTypeDef *motor)
     return first != HAL_OK ? first : second;
 }
 
-HAL_StatusTypeDef Motor_PIDConfigure(Motor_HandleTypeDef *motor, uint32_t cpr,
-                                     int8_t sign, const PID_Config *config)
+static HAL_StatusTypeDef configure_speed(Motor_HandleTypeDef *motor, uint32_t cpr,
+                                         int8_t sign, const PID_Config *config,
+                                         Motor_SpeedUnit unit)
 {
     PID_Controller candidate = {0};
     Motor_SpeedControl *control = speed_control(motor);
     Encoder_State *encoder;
-    if (!systemReady || !motor_valid(motor) || control == NULL || cpr == 0U ||
+    if (!systemReady || !motor_valid(motor) || control == NULL ||
+        (unit == MOTOR_SPEED_RPM && cpr == 0U) ||
         (sign != 1 && sign != -1) || config == NULL ||
         config->output_min != 0.0f || config->output_max > 1000.0f ||
         (config->kp == 0.0f && config->ki == 0.0f) || !PID_Init(&candidate, config))
@@ -273,29 +284,58 @@ HAL_StatusTypeDef Motor_PIDConfigure(Motor_HandleTypeDef *motor, uint32_t cpr,
     control->pid = candidate;
     control->cpr = cpr;
     control->sign = sign;
+    control->unit = unit;
+    control->feedback_timeout_ms = unit == MOTOR_SPEED_COUNTS ? 300U : 0U;
     control->configured = 1U;
     return HAL_OK;
 }
 
-static int target_valid(Motor_HandleTypeDef *motor, float rpm)
+HAL_StatusTypeDef Motor_PIDConfigure(Motor_HandleTypeDef *motor, uint32_t cpr,
+                                     int8_t sign, const PID_Config *config)
+{
+    return configure_speed(motor, cpr, sign, config, MOTOR_SPEED_RPM);
+}
+
+HAL_StatusTypeDef Motor_PIDConfigureCounts(Motor_HandleTypeDef *motor,
+                                           int8_t sign, const PID_Config *config)
+{
+    return configure_speed(motor, 0U, sign, config, MOTOR_SPEED_COUNTS);
+}
+
+HAL_StatusTypeDef Motor_SetFeedbackTimeout(Motor_HandleTypeDef *motor,
+                                          uint32_t timeout_ms)
+{
+    Motor_SpeedControl *control = speed_control(motor);
+    if (!motor_valid(motor) || control == NULL || !control->configured ||
+        timeout_ms > 60000U || (timeout_ms != 0U && timeout_ms < 10U))
+        return HAL_ERROR;
+    if (control->enabled) return HAL_BUSY;
+    control->feedback_timeout_ms = timeout_ms;
+    control->no_feedback_ms = 0U;
+    return HAL_OK;
+}
+
+static int target_valid(Motor_HandleTypeDef *motor, float target, Motor_SpeedUnit unit)
 {
     Motor_SpeedControl *control = speed_control(motor);
     Encoder_State *encoder;
     if (!systemReady || !motor_valid(motor) || control == NULL ||
-        rpm != rpm || rpm > FLT_MAX || rpm < -FLT_MAX) return 0;
-    if (rpm == 0.0f) return 1;
+        target != target || target > FLT_MAX || target < -FLT_MAX) return 0;
+    if (target == 0.0f) return 1;
     encoder = motor == &motorA ? &encoderA : &encoderB;
-    if (!control->configured || encoder->counts_per_turn != control->cpr ||
+    if (!control->configured || control->unit != unit ||
+        encoder->counts_per_turn != control->cpr ||
         encoder->sign != control->sign) return 0;
-    if (control->enabled && ((rpm > 0.0f) != (control->target_rpm > 0.0f)))
+    if (control->enabled && ((target > 0.0f) != (control->target > 0.0f)))
         return 0;
     return 1;
 }
 
-HAL_StatusTypeDef CSGO(float cn1_rpm, float cn2_rpm)
+HAL_StatusTypeDef Motor_SetTargetsRPM(float cn1_rpm, float cn2_rpm)
 {
     /* Validate BOTH requests before changing either target. Foreground only. */
-    if (!target_valid(&motorA, cn1_rpm) || !target_valid(&motorB, cn2_rpm))
+    if (!target_valid(&motorA, cn1_rpm, MOTOR_SPEED_RPM) ||
+        !target_valid(&motorB, cn2_rpm, MOTOR_SPEED_RPM))
         return HAL_ERROR;
     if (Motor_SetTargetRPM(&motorA, cn1_rpm) != HAL_OK ||
         Motor_SetTargetRPM(&motorB, cn2_rpm) != HAL_OK)
@@ -307,19 +347,56 @@ HAL_StatusTypeDef CSGO(float cn1_rpm, float cn2_rpm)
     return HAL_OK;
 }
 
-HAL_StatusTypeDef Motor_SetTargetRPM(Motor_HandleTypeDef *motor, float rpm)
+static HAL_StatusTypeDef set_target(Motor_HandleTypeDef *motor, float target,
+                                    Motor_SpeedUnit unit)
 {
     Motor_SpeedControl *control = speed_control(motor);
-    if (!target_valid(motor, rpm)) return HAL_ERROR;
-    if (rpm == 0.0f) return Motor_Stop(motor);
+    if (!target_valid(motor, target, unit)) return HAL_ERROR;
+    if (target == 0.0f) return Motor_Stop(motor);
     if (!control->enabled)
     {
         if (Motor_Stop(motor) != HAL_OK) return HAL_ERROR;
         /* The first control output is computed at the next encoder sample. */
     }
-    control->target_rpm = rpm;
+    control->target = target;
     control->enabled = 1U;
     return HAL_OK;
+}
+
+HAL_StatusTypeDef Motor_SetTargetRPM(Motor_HandleTypeDef *motor, float rpm)
+{
+    return set_target(motor, rpm, MOTOR_SPEED_RPM);
+}
+
+HAL_StatusTypeDef Motor_SetTargetCountsPerSecond(Motor_HandleTypeDef *motor,
+                                                float counts_per_second)
+{
+    return set_target(motor, counts_per_second, MOTOR_SPEED_COUNTS);
+}
+
+HAL_StatusTypeDef Motor_SetTargetsCountsPerSecond(float cn1, float cn2)
+{
+    if (!target_valid(&motorA, cn1, MOTOR_SPEED_COUNTS) ||
+        !target_valid(&motorB, cn2, MOTOR_SPEED_COUNTS)) return HAL_ERROR;
+    if (Motor_SetTargetCountsPerSecond(&motorA, cn1) != HAL_OK ||
+        Motor_SetTargetCountsPerSecond(&motorB, cn2) != HAL_OK)
+    {
+        (void)Motor_Stop(&motorA);
+        (void)Motor_Stop(&motorB);
+        return HAL_ERROR;
+    }
+    return HAL_OK;
+}
+
+HAL_StatusTypeDef CSGO(float cn1_speed_percent, float cn2_speed_percent)
+{
+    if (cn1_speed_percent != cn1_speed_percent || cn2_speed_percent != cn2_speed_percent ||
+        cn1_speed_percent < 0.0f || cn1_speed_percent > 100.0f ||
+        cn2_speed_percent < 0.0f || cn2_speed_percent > 100.0f)
+        return HAL_ERROR;
+    return Motor_SetTargetsCountsPerSecond(
+        cn1_speed_percent * Motor_FullScaleCountsPerSecond[0] / 100.0f,
+        cn2_speed_percent * Motor_FullScaleCountsPerSecond[1] / 100.0f);
 }
 
 HAL_StatusTypeDef Motor_PIDDisable(Motor_HandleTypeDef *motor)
@@ -334,23 +411,39 @@ uint8_t Motor_PIDIsEnabled(const Motor_HandleTypeDef *motor)
     return control != NULL ? control->enabled : 0U;
 }
 
-static HAL_StatusTypeDef speed_update(float dt)
+static HAL_StatusTypeDef speed_update(uint32_t elapsed_ms)
 {
     Motor_HandleTypeDef *motors[2] = {&motorA, &motorB};
     Encoder_State *encoders[2] = {&encoderA, &encoderB};
     int32_t duties[2] = {0, 0};
+    float dt = (float)elapsed_ms * 0.001f;
+    HAL_StatusTypeDef status = HAL_ERROR;
     unsigned int i;
     for (i = 0U; i < 2U; ++i)
     {
         Motor_SpeedControl *control = &speedControl[i];
         Encoder_State *encoder = encoders[i];
-        float direction, output;
+        float direction, output, measurement;
         if (!control->enabled) continue;
         if (!encoder->valid || encoder->counts_per_turn != control->cpr ||
-            encoder->sign != control->sign || control->cpr == 0U) goto fault;
-        direction = control->target_rpm > 0.0f ? 1.0f : -1.0f;
-        if (!PID_Update(&control->pid, control->target_rpm * direction,
-                        encoder->rpm * direction, dt, &output)) goto fault;
+            encoder->sign != control->sign ||
+            (control->unit == MOTOR_SPEED_RPM && control->cpr == 0U)) goto fault;
+        if (control->feedback_timeout_ms != 0U && control->pid.output >= 0.5f &&
+            encoder->delta == 0)
+        {
+            control->no_feedback_ms += elapsed_ms;
+            if (control->no_feedback_ms >= control->feedback_timeout_ms)
+            {
+                status = HAL_TIMEOUT;
+                goto fault;
+            }
+        }
+        else control->no_feedback_ms = 0U;
+        direction = control->target > 0.0f ? 1.0f : -1.0f;
+        measurement = control->unit == MOTOR_SPEED_COUNTS ?
+                      encoder->counts_per_second : encoder->rpm;
+        if (!PID_Update(&control->pid, control->target * direction,
+                        measurement * direction, dt, &output)) goto fault;
         duties[i] = (int32_t)(output + 0.5f);
         if (direction < 0.0f) duties[i] = -duties[i];
     }
@@ -361,7 +454,7 @@ static HAL_StatusTypeDef speed_update(float dt)
 fault:
     for (i = 0U; i < 2U; ++i)
         if (speedControl[i].enabled) (void)Motor_Stop(motors[i]);
-    return HAL_ERROR;
+    return status;
 }
 
 #include <limits.h>

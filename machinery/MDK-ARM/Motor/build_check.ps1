@@ -6,11 +6,11 @@ $output = Join-Path $root 'build\motor-check\firmware'
 New-Item -ItemType Directory -Force -Path $output | Out-Null
 $params = Get-Content -LiteralPath 'build\machinery\builder.params' -Raw | ConvertFrom-Json
 $hal = 'D:/Environment/STM32CubeMX/Repository/STM32Cube_FW_F1_V1.8.7/Drivers/STM32F1xx_HAL_Driver/Src'
-$sources = @($params.sourceList) + @('Motor/motor.c', 'Motor/pid.c', '../Core/Src/tim.c', "$hal/stm32f1xx_hal_tim.c", "$hal/stm32f1xx_hal_tim_ex.c")
+$sources = @($params.sourceList | Where-Object { $_ -notmatch 'Motor[/\\]' }) + @('../Core/Src/motor.c', '../Core/Src/pid.c', '../Core/Src/motor_command.c', '../Core/Src/motor_uart.c', "$hal/stm32f1xx_hal_uart.c", '../Core/Src/tim.c', "$hal/stm32f1xx_hal_tim.c", "$hal/stm32f1xx_hal_tim_ex.c")
 $sources = @($sources | ForEach-Object { $_.Replace('\','/') } | Select-Object -Unique)
 $sources = @($sources | Where-Object { $_ -notmatch '(^|/)(n20|encoder)\.c$' })
 $argsC = @('--cpu','Cortex-M3','--c99','--split_sections','-O2','--diag_suppress=1295')
-foreach ($include in (@($params.incDirs) + @('Motor'))) { $argsC += @('-I',$include) }
+foreach ($include in (@($params.incDirs) + @('../Core/Inc'))) { $argsC += @('-I',$include) }
 foreach ($define in $params.defines) { $argsC += ('-D' + $define) }
 $compiler = Join-Path $params.toolchainLocation 'bin\armcc.exe'
 $assembler = Join-Path $params.toolchainLocation 'bin\armasm.exe'

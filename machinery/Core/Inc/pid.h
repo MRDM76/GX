@@ -1,6 +1,8 @@
 #ifndef PID_H
 #define PID_H
 
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -11,6 +13,10 @@ typedef struct {
     float integral_min, integral_max;
     float derivative_tau; /* derivative low-pass time constant, seconds */
 } PID_Config;
+
+extern const PID_Config Motor_MeasuredCountsPID;
+extern const float Motor_FullScaleCountsPerSecond[2];
+int PID_MakeRPMConfig(uint32_t cpr, PID_Config *config);
 
 typedef struct {
     PID_Config config;

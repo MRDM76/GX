@@ -23,8 +23,10 @@ virtualFolder:
                 - path: ../Core/Src/main.c
                 - path: ../Core/Src/gpio.c
                 - path: ../Core/Src/tim.c
-                - path: Motor/motor.c
-                - path: Motor/pid.c
+                - path: ../Core/Src/motor.c
+                - path: ../Core/Src/pid.c
+                - path: ../Core/Src/motor_uart.c
+                - path: ../Core/Src/motor_command.c
                 - path: ../Core/Src/stm32f1xx_it.c
                 - path: ../Core/Src/stm32f1xx_hal_msp.c
               folders: []
@@ -34,6 +36,7 @@ virtualFolder:
         - name: STM32F1xx_HAL_Driver
           files:
             - path: D:/Environment/STM32CubeMX/Repository/STM32Cube_FW_F1_V1.8.7/Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_gpio_ex.c
+            - path: D:/Environment/STM32CubeMX/Repository/STM32Cube_FW_F1_V1.8.7/Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_uart.c
             - path: D:/Environment/STM32CubeMX/Repository/STM32Cube_FW_F1_V1.8.7/Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal.c
             - path: D:/Environment/STM32CubeMX/Repository/STM32Cube_FW_F1_V1.8.7/Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_tim.c
             - path: D:/Environment/STM32CubeMX/Repository/STM32Cube_FW_F1_V1.8.7/Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_tim_ex.c
@@ -65,7 +68,6 @@ targets:
       incList:
         - .
         - ../Core/Inc
-        - Motor
         - D:/Environment/STM32CubeMX/Repository/STM32Cube_FW_F1_V1.8.7/Drivers/STM32F1xx_HAL_Driver/Inc/Legacy
         - D:/Environment/STM32CubeMX/Repository/STM32Cube_FW_F1_V1.8.7/Drivers/STM32F1xx_HAL_Driver/Inc
         - D:/Environment/STM32CubeMX/Repository/STM32Cube_FW_F1_V1.8.7/Drivers/CMSIS/Device/ST/STM32F1xx/Include
