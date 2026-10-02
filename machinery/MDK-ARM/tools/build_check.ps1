@@ -1,4 +1,3 @@
-param([switch]$Staged)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $root
@@ -17,7 +16,6 @@ $assembler = Join-Path $params.toolchainLocation 'bin\armasm.exe'
 $linker = Join-Path $params.toolchainLocation 'bin\armlink.exe'
 $objects = @()
 foreach ($source in $sources) {
-    if ($Staged -and $source -eq '../Core/Src/main.c') { $source = 'build/motor-simplify/main.c' }
     $obj = Join-Path $output ([System.IO.Path]::GetFileNameWithoutExtension($source) + '.o')
     if ([System.IO.Path]::GetExtension($source) -eq '.s') {
         & $assembler --cpu Cortex-M3 $source -o $obj

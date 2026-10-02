@@ -39,7 +39,7 @@ def build():
                   outDir="build/pid-probe", dumpPath="build/pid-probe")
     params["sourceList"] = [source for source in params["sourceList"]
                             if Path(source).name != "main.c"]
-    params["sourceList"].append("Motor/hardware/pid_probe_main.c")
+    params["sourceList"].append("tools/hardware/pid_probe_main.c")
     hal_source = next(source for source in params["sourceList"]
                       if Path(source).name == "stm32f1xx_hal.c")
     params["sourceList"].append(str(Path(hal_source).with_name("stm32f1xx_hal_iwdg.c")))
